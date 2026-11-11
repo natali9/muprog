@@ -125,18 +125,44 @@ if ($form->is_cancelled()) {
 if ($data = $form->get_data()) {
     if ($type === 'set') {
         $set = $top->append_set($parent, (array)$data);
+        
     } else if ($type === 'course') {
         $courseids = $data->courseids;
         unset($data->courseids);
+        
+        $duration_days = isset($data->duration_days) ? (int)$data->duration_days : 14;
+        unset($data->duration_days);
+
+        $sortorder = 0;
         foreach ($courseids as $courseid) {
-            $coursecontext = context_course::instance($courseid);
-            $top->append_course($parent, $courseid, (array)$data);
+            $coursecontext = \context_course::instance($courseid);
+            $item = $top->append_course($parent, $courseid, (array)$data);
+            
+            if ($item && $item->get_id() && class_exists('\tool_muprog\deadline_manager')) {
+                try {
+                    \tool_muprog\deadline_manager::save_course_rule(
+                        $parent->get_programid(),
+                        $courseid,
+                        $duration_days,
+                        'program_start',
+                        $sortorder,
+                        1,
+                        0
+                    );
+                } catch (\Exception $e) {
+                    debugging("Ошибка сохранения правил сроков: " . $e->getMessage(), DEBUG_DEVELOPER);
+                }
+            }
+            $sortorder++;
         }
-    } else if ($type === 'attendance') {
+        
+    } else if ($type === 'attendance') { // <-- ДОБАВЛЕНА ЭТА СКОБКА ВЫШЕ
         $top->append_attendance($parent, (array)$data);
+        
     } else if ($type === 'credits') {
         $top->append_credits($parent, $data->creditframeworkid, (array)$data);
     }
+    
     $form->ajax_form_submitted($returnurl);
 }
 

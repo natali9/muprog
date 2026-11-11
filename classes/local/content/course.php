@@ -29,6 +29,10 @@ namespace tool_muprog\local\content;
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class course extends item {
+
+    /** @var int|null Срок прохождения в днях */
+    public ?int $duration_days = null;
+
     #[\Override]
     public static function get_type(): string {
         return 'course';
@@ -48,12 +52,35 @@ final class course extends item {
         return $this->courseid;
     }
 
+    /**
+     * Get duration in days.
+     *
+     * @return int
+     */
+    public function get_duration_days(): int {
+        return $this->duration_days ?? 14; // Возвращаем 14 дней по умолчанию, если значение не задано
+    }
+
     #[\Override]
     protected static function init_from_record(\stdClass $record, ?item $previous, array &$unusedrecords, array &$prerequisites): item {
         if ($record->type !== 'course' || $record->topitem || !$record->courseid || $record->creditframeworkid !== null) {
             throw new \core\exception\coding_exception('Invalid course item');
         }
-        return parent::init_from_record($record, $previous, $unusedrecords, $prerequisites);
+        
+        /** @var course $item */
+        $item = parent::init_from_record($record, $previous, $unusedrecords, $prerequisites);
+
+        // === ЗАГРУЖАЕМ НАШУ ДЛИТЕЛЬНОСТЬ ИЗ ТАБЛИЦЫ ПРАВИЛ ===
+        global $DB;
+        $rule = $DB->get_record('tool_muprog_course_rules', [
+            'programid' => $record->programid,
+            'courseid' => $record->courseid
+        ]);
+        
+        $item->duration_days = $rule ? (int)$rule->duration_days : 14;
+        // ====================================================
+
+        return $item;
     }
 
     #[\Override]
@@ -62,6 +89,7 @@ final class course extends item {
 
         $record = parent::get_record();
 
+        // Получаем актуальное полное имя курса из таблицы course
         $fullname = $DB->get_field('course', 'fullname', ['id' => $this->courseid]);
         if ($fullname !== false) {
             $record['fullname'] = $fullname;

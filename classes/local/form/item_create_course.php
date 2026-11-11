@@ -60,6 +60,12 @@ final class item_create_course extends \tool_mulib\local\ajax_form {
             ['optional' => true, 'defaultunit' => DAYSECS]
         );
 
+        // 1. Поле для ввода количества дней
+        $mform->addElement('text', 'duration_days', get_string('duration_days', 'tool_muprog'));
+        $mform->setType('duration_days', PARAM_INT);
+        $mform->setDefault('duration_days', 14);
+        $mform->addHelpButton('duration_days', 'duration_days', 'tool_muprog');
+
         $mform->addElement('text', 'points', get_string('itempoints', 'tool_muprog'));
         $mform->setType('points', PARAM_INT);
 
@@ -70,7 +76,6 @@ final class item_create_course extends \tool_mulib\local\ajax_form {
         $mform->setType('type', PARAM_ALPHANUM);
 
         $this->add_action_buttons(true, get_string('item_create_course', 'tool_muprog'));
-
         $this->set_data($currentdata);
     }
 
@@ -83,7 +88,7 @@ final class item_create_course extends \tool_mulib\local\ajax_form {
         /** @var \context $context */
         $context = $this->_customdata['context'];
 
-        if ($data['courseids']) {
+        if (!empty($data['courseids'])) {
             $args = ['programid' => $parent->get_programid()];
             foreach ($data['courseids'] as $courseid) {
                 $error = item_create_course_courseids::validate_value($courseid, $args, $context);
@@ -96,8 +101,12 @@ final class item_create_course extends \tool_mulib\local\ajax_form {
             $errors['courseids'] = get_string('required');
         }
 
-        if ($data['points'] < 0) {
+        if (isset($data['points']) && (int)$data['points'] < 0) {
             $errors['points'] = get_string('error');
+        }
+
+        if (!isset($data['duration_days']) || (int)$data['duration_days'] <= 0) {
+            $errors['duration_days'] = get_string('error_duration_positive', 'tool_muprog');
         }
 
         return $errors;

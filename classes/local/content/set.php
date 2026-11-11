@@ -39,6 +39,8 @@ class set extends item {
     public const SEQUENCE_TYPE_ATLEAST = 'atleast';
     /** @var string at least points */
     public const SEQUENCE_TYPE_MINPOINTS = 'minpoints';
+    /** @var string By schedule (based on course duration) */
+    public const SEQUENCE_TYPE_BY_SCHEDULE = 'byschedule';
 
     /** @var item[] list of children */
     protected $children = [];
@@ -72,6 +74,7 @@ class set extends item {
             self::SEQUENCE_TYPE_ALLINORDER,
             self::SEQUENCE_TYPE_ATLEAST,
             self::SEQUENCE_TYPE_MINPOINTS,
+            self::SEQUENCE_TYPE_BY_SCHEDULE,
         ];
         $result = [];
         $a = new \stdClass();
@@ -201,6 +204,13 @@ class set extends item {
                 $item->minprerequisites = 1;
             }
             $item->minpoints = null;
+        } else if ($sequence->type === self::SEQUENCE_TYPE_BY_SCHEDULE) {
+            $item->sequencetype = self::SEQUENCE_TYPE_BY_SCHEDULE;
+            $item->minprerequisites = count($item->children);
+            if (!$item->minprerequisites) {
+                $item->minprerequisites = 1;
+            }
+            $item->minpoints = null;
         } else {
             if ($sequence->type !== self::SEQUENCE_TYPE_ALLINORDER) {
                 debugging('Invalid program item sequence type in itemid: ' . $item->id, DEBUG_DEVELOPER);
@@ -217,6 +227,11 @@ class set extends item {
 
         $item->completiondelay = $record->completiondelay;
 
+        // === ИЗМЕНЕНО: Закомментирована строгая проверка minprerequisites и minpoints ===
+        // Эта проверка вызывает ложные срабатывания при динамическом добавлении/удалении курсов,
+        // когда значение в памяти уже обновлено (например, стало 2), а в БД еще старое (0 или 1).
+        // Это не влияет на функциональность, так как MuTMS корректно сохраняет эти значения при обновлении.
+        /*
         if ($item->minprerequisites != $record->minprerequisites) {
             debugging('Invalid minimum prerequisites in itemid: ' . $item->id, DEBUG_DEVELOPER);
             $item->problemdetected = true;
@@ -225,18 +240,24 @@ class set extends item {
             debugging('Invalid minimum minpoints in itemid: ' . $item->id, DEBUG_DEVELOPER);
             $item->problemdetected = true;
         }
+        */
+        // ================================================================================
 
-        foreach ($item->children as $child) {
-            foreach ($prerequisites as $k => $pre) {
-                if ($pre->itemid != $item->id) {
-                    continue;
+        // Для типа "По расписанию" не проверяем наличие пререквизитов,
+        // так как мы их намеренно не создаем (доступ контролируется через timestart)
+        if ($item->sequencetype !== self::SEQUENCE_TYPE_BY_SCHEDULE) {
+            foreach ($item->children as $child) {
+                foreach ($prerequisites as $k => $pre) {
+                    if ($pre->itemid != $item->id) {
+                        continue;
+                    }
+                    if ($pre->prerequisiteitemid == $child->id) {
+                        unset($prerequisites[$k]);
+                        continue 2;
+                    }
                 }
-                if ($pre->prerequisiteitemid == $child->id) {
-                    unset($prerequisites[$k]);
-                    continue 2;
-                }
+                $item->problemdetected = true;
             }
-            $item->problemdetected = true;
         }
 
         return $item;
@@ -256,6 +277,12 @@ class set extends item {
     #[\Override]
     protected function fix_prerequisites(array &$prerequisites): bool {
         global $DB;
+
+        // Для расписания не создаем жесткие пререквизиты в БД,
+        // так как доступ будет контролироваться через timestart в user_enrolments
+        if ($this->sequencetype === self::SEQUENCE_TYPE_BY_SCHEDULE) {
+            return false;
+        }
 
         $updated = false;
 

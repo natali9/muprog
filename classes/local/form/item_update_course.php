@@ -33,12 +33,13 @@ use tool_muprog\local\content\course;
 final class item_update_course extends \tool_mulib\local\ajax_form {
     #[\Override]
     protected function definition() {
+        global $DB;
+        
         $mform = $this->_form;
         /** @var course $course */
         $course = $this->_customdata['course'];
 
         $mform->addElement('static', 'statictype', get_string('item_type', 'tool_muprog'), $course::get_type_name());
-
         $mform->addElement('static', 'staticfullname', get_string('fullname'), format_string($course->get_fullname()));
 
         $mform->addElement(
@@ -48,6 +49,19 @@ final class item_update_course extends \tool_mulib\local\ajax_form {
             ['optional' => true, 'defaultunit' => DAYSECS]
         );
         $mform->setDefault('completiondelay', $course->get_completiondelay());
+
+        // 1. Поле для ввода количества дней
+        $rule = $DB->get_record('tool_muprog_course_rules', [
+            'programid' => $course->get_programid(),
+            'courseid' => $course->get_courseid()
+        ]);
+
+        $default_duration = $rule ? (int)$rule->duration_days : 14;
+
+        $mform->addElement('text', 'duration_days', get_string('duration_days', 'tool_muprog'));
+        $mform->setType('duration_days', PARAM_INT);
+        $mform->setDefault('duration_days', $default_duration);
+        $mform->addHelpButton('duration_days', 'duration_days', 'tool_muprog');
 
         $mform->addElement('text', 'points', get_string('itempoints', 'tool_muprog'));
         $mform->setType('points', PARAM_INT);
@@ -64,8 +78,12 @@ final class item_update_course extends \tool_mulib\local\ajax_form {
     public function validation($data, $files) {
         $errors = parent::validation($data, $files);
 
-        if ($data['points'] < 0) {
+        if (isset($data['points']) && (int)$data['points'] < 0) {
             $errors['points'] = get_string('error');
+        }
+
+        if (!isset($data['duration_days']) || (int)$data['duration_days'] <= 0) {
+            $errors['duration_days'] = get_string('error_duration_positive', 'tool_muprog');
         }
 
         return $errors;

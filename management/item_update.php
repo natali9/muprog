@@ -81,13 +81,33 @@ if ($form->is_cancelled()) {
 if ($data = $form->get_data()) {
     if ($type === 'set' || $type === 'top') {
         $top->update_set($item, (array)$data);
+        
     } else if ($type === 'course') {
         $top->update_course($item, (array)$data);
-    } else if ($type === 'attendance') {
+        
+        if (isset($data->duration_days) && class_exists('\tool_muprog\deadline_manager')) {
+            try {
+                \tool_muprog\deadline_manager::save_course_rule(
+                    $item->get_programid(),
+                    $item->get_courseid(),
+                    (int)$data->duration_days,
+                    'program_start',
+                    0,
+                    1,
+                    0
+                );
+            } catch (\Exception $e) {
+                debugging("Ошибка обновления правил сроков: " . $e->getMessage(), DEBUG_DEVELOPER);
+            }
+        }
+        
+    } else if ($type === 'attendance') { // <-- ДОБАВЛЕНА ЭТА СКОБКА ВЫШЕ
         $top->update_attendance($item, (array)$data);
+        
     } else if ($type === 'credits') {
         $top->update_credits($item, (array)$data);
     }
+    
     $form->ajax_form_submitted($returnurl);
 }
 

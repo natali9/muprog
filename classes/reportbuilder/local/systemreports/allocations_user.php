@@ -22,10 +22,8 @@ namespace tool_muprog\reportbuilder\local\systemreports;
 use tool_muprog\reportbuilder\local\entities\program;
 use tool_muprog\reportbuilder\local\entities\allocation;
 use tool_muprog\reportbuilder\local\entities\source;
-use core_reportbuilder\local\entities\user;
 use core_reportbuilder\system_report;
 use core_reportbuilder\local\helpers\database;
-use core_reportbuilder\local\helpers\user_profile_fields;
 use lang_string;
 
 /**
@@ -36,8 +34,6 @@ use lang_string;
  * @license     https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class allocations_user extends system_report {
-    /** @var user */
-    protected $userentity;
     /** @var allocation */
     protected $allocationentity;
     /** @var source */
@@ -93,7 +89,6 @@ final class allocations_user extends system_report {
         }
 
         if ($usercontext->instanceid == $USER->id) {
-            // Everybody may see own programs.
             return true;
         }
 
@@ -108,6 +103,7 @@ final class allocations_user extends system_report {
         $programalias = $this->programentity->get_table_alias('tool_muprog_program');
         $sourcealias = $this->sourceentity->get_table_alias('tool_muprog_source');
 
+        // 1. Название программы (со ссылкой)
         $column = $this->programentity->get_column('fullname')
             ->add_fields("{$programalias}.id, {$allocationalias}.userid")
             ->add_callback(static function ($value, \stdClass $row): string {
@@ -121,10 +117,44 @@ final class allocations_user extends system_report {
         $this->add_column($column);
 
         $this->add_column_from_entity('program:idnumber');
-        $this->add_column_from_entity('allocation:timestart');
-        $this->add_column_from_entity('allocation:timedue');
-        $this->add_column_from_entity('allocation:timeend');
 
+        // 2. Начало программы (timestart) - берем сырое значение из БД для корректного форматирования
+        $column = $this->allocationentity->get_column('timestart')
+            ->add_fields("{$allocationalias}.timestart AS timestart_raw")
+            ->add_callback(static function ($value, \stdClass $row): string {
+                $raw = $row->timestart_raw ?? null;
+                if (!$raw) {
+                    return get_string('notset', 'tool_muprog');
+                }
+                return userdate((int)$raw, get_string('strftimedate'));
+            });
+        $this->add_column($column);
+
+        // 3. Срок программы (timedue) - берем сырое значение из БД
+        $column = $this->allocationentity->get_column('timedue')
+            ->add_fields("{$allocationalias}.timedue AS timedue_raw")
+            ->add_callback(static function ($value, \stdClass $row): string {
+                $raw = $row->timedue_raw ?? null;
+                if (!$raw) {
+                    return get_string('notset', 'tool_muprog');
+                }
+                return userdate((int)$raw, get_string('strftimedate'));
+            });
+        $this->add_column($column);
+
+        // 4. Конец программы (timeend) - берем сырое значение из БД
+        $column = $this->allocationentity->get_column('timeend')
+            ->add_fields("{$allocationalias}.timeend AS timeend_raw")
+            ->add_callback(static function ($value, \stdClass $row): string {
+                $raw = $row->timeend_raw ?? null;
+                if (!$raw) {
+                    return get_string('notset', 'tool_muprog');
+                }
+                return userdate((int)$raw, get_string('strftimedate'));
+            });
+        $this->add_column($column);
+
+        // 5. Источник распределения
         $column = $this->sourceentity->get_column('type')
             ->add_fields("{$allocationalias}.id, {$sourcealias}.type, {$allocationalias}.programid")
             ->add_callback(static function ($value, \stdClass $row): string {

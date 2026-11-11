@@ -115,23 +115,25 @@ class renderer extends \plugin_renderer_base {
         );
         $details->add(
             get_string('allocationdate', 'tool_muprog'),
-            userdate($allocation->timeallocated)
+            userdate($allocation->timeallocated, get_string('strftimedate'))
         );
         $details->add(
             get_string('programstart', 'tool_muprog'),
-            userdate($allocation->timestart)
+            userdate($allocation->timestart, get_string('strftimedate'))
         );
         $details->add(
             get_string('programdue', 'tool_muprog'),
-            (isset($allocation->timedue) ? userdate($allocation->timedue) : $strnotset)
+            (isset($allocation->timedue) ? userdate($allocation->timedue, get_string('strftimedate')) : $strnotset)
         );
         $details->add(
             get_string('programend', 'tool_muprog'),
-            (isset($allocation->timeend) ? userdate($allocation->timeend) : $strnotset)
+            (isset($allocation->timeend) ? userdate($allocation->timeend, get_string('strftimedate')) : $strnotset)
         );
+        
+        // === ИЗМЕНЕНО: добавлен формат strftimedate для даты завершения программы ===
         $details->add(
             get_string('completiondate', 'tool_muprog'),
-            (isset($allocation->timecompleted) ? userdate($allocation->timecompleted) : $strnotset)
+            (isset($allocation->timecompleted) ? userdate($allocation->timecompleted, get_string('strftimedate')) : $strnotset)
         );
 
         $handler = \tool_muprog\customfield\allocation_handler::create();
@@ -186,6 +188,9 @@ class renderer extends \plugin_renderer_base {
                 $completiontype .= '<small>' . get_string('completiondelay', 'tool_muprog') . ': ' . util::format_duration($completiondelay) . '</small>';
             }
 
+            $course_start_str = '-';
+            $course_deadline_str = '-';
+
             if ($item instanceof course) {
                 $courseid = $item->get_courseid();
                 $coursecontext = \context_course::instance($courseid, IGNORE_MISSING);
@@ -205,6 +210,38 @@ class renderer extends \plugin_renderer_base {
                     }
                 } else {
                     $fullname .= ' <span class="badge bg-danger">' . get_string('errorcoursemissing', 'tool_muprog') . '</span>';
+                }
+
+                                // === ИЗМЕНЕНО: Дедлайн берём из tool_muprog_user_deadlines,
+                // дату старта — из user_enrolments (с защитой от нулевых значений) ===
+                
+                // 1. Дедлайн — из нашей таблицы
+                $deadline_record = $DB->get_record('tool_muprog_user_deadlines', [
+                    'userid' => $allocation->userid,
+                    'programid' => $allocation->programid,
+                    'courseid' => $courseid,
+                ]);
+                if ($deadline_record && !empty($deadline_record->deadline)) {
+                    $course_deadline_str = userdate($deadline_record->deadline, get_string('strftimedate'));
+                }
+
+                // 2. Дата старта — из user_enrolments
+                $sql = "SELECT ue.timestart
+                          FROM {user_enrolments} ue
+                          JOIN {enrol} e ON e.id = ue.enrolid
+                         WHERE ue.userid = :userid
+                           AND e.courseid = :courseid
+                           AND ue.status = :active
+                           AND ue.timestart > 0
+                      ORDER BY ue.timestart DESC";
+                $enrol = $DB->get_record_sql($sql, [
+                    'userid' => $allocation->userid,
+                    'courseid' => $courseid,
+                    'active' => ENROL_USER_ACTIVE
+                ], IGNORE_MULTIPLE);
+
+                if ($enrol && !empty($enrol->timestart)) {
+                    $course_start_str = userdate($enrol->timestart, get_string('strftimedate'));
                 }
             }
 
@@ -229,10 +266,18 @@ class renderer extends \plugin_renderer_base {
             $completioninfo = '';
             $completion = $DB->get_record('tool_muprog_completion', ['itemid' => $item->get_id(), 'allocationid' => $allocation->id]);
             if ($completion) {
-                $completioninfo = userdate($completion->timecompleted, get_string('strftimedatetimeshort'));
+                // === ИЗМЕНЕНО: используем strftimedate вместо strftimedatetimeshort ===
+                $completioninfo = userdate($completion->timecompleted, get_string('strftimedate'));
             }
 
-            $row = [$itemname, $points, $completiontype, $completioninfo];
+            $row = [
+                $itemname, 
+                $points, 
+                $completiontype, 
+                $course_start_str,
+                $course_deadline_str,
+                $completioninfo
+            ];
 
             $rows[] = $row;
 
@@ -247,6 +292,8 @@ class renderer extends \plugin_renderer_base {
             get_string('item', 'tool_muprog'),
             get_string('itempoints', 'tool_muprog'),
             get_string('sequencetype', 'tool_muprog'),
+            get_string('course_start_date', 'tool_muprog'),
+            get_string('course_deadline_date', 'tool_muprog'),
             get_string('completiondate', 'tool_muprog'),
         ];
         $table->id = 'program_content';
@@ -260,7 +307,7 @@ class renderer extends \plugin_renderer_base {
     }
 
     /**
-     * Returns body of My programs block.
+     * Returns body of My programs block / page.
      *
      * @return string
      */
@@ -274,7 +321,7 @@ class renderer extends \plugin_renderer_base {
 
         $programicon = $this->output->pix_icon('program', '', 'tool_muprog');
         $strnotset = get_string('notset', 'tool_muprog');
-        $dateformat = get_string('strftimedatetimeshort');
+        $dateformat = get_string('strftimedate');
 
         foreach ($allocations as $allocation) {
             $row = [];
@@ -286,13 +333,9 @@ class renderer extends \plugin_renderer_base {
             $row[] = $fullname;
 
             $row[] = userdate($allocation->timestart, $dateformat);
-
             $row[] = (isset($allocation->timedue) ? userdate($allocation->timedue, $dateformat) : $strnotset);
-
             $row[] = (isset($allocation->timeend) ? userdate($allocation->timeend, $dateformat) : $strnotset);
-
             $row[] = \tool_muprog\local\allocation::get_progress_percentage($program, $allocation);
-
             $row[] = \tool_muprog\local\allocation::get_completion_status_html($program, $allocation);
 
             $data[] = $row;

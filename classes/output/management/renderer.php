@@ -289,6 +289,13 @@ class renderer extends \plugin_renderer_base {
                 $completion .= '<small>' . get_string('completiondelay', 'tool_muprog') . ': ' . util::format_duration($completiondelay) . '</small>';
             }
 
+            // === ДОБАВЛЯЕМ ЗНАЧЕНИЕ ДЛЯ СТОЛБЦА "Срок прохождения" ===
+            $duration = '';
+            if ($item instanceof course) {
+                $duration = $item->get_duration_days();
+            }
+            // ========================================================
+
             if ($movetargetsfor == $item->get_id()) {
                 $showtargets = false;
             }
@@ -415,7 +422,7 @@ class renderer extends \plugin_renderer_base {
                 $a = (object)['item' => $movetargetsforname, 'target' => $item->get_fullname()];
                 $movehere = get_string('movebefore', 'tool_muprog', $a);
                 $target = $padding . \html_writer::link($turl, $movehere, ['class' => 'movehere']);
-                $rows[]  = [$target, '', ''];
+                $rows[]  = [$target, '', '', '', ''];
             }
 
             if ($item instanceof top) {
@@ -424,7 +431,7 @@ class renderer extends \plugin_renderer_base {
                 $points = $item->get_points();
             }
 
-            $rows[] = [$itemname, $points, $completion, implode('', $actions)];
+            $rows[] = [$itemname, $points, $completion, $duration, implode('', $actions)];
 
             $children = $item->get_children();
             if ($children) {
@@ -441,7 +448,7 @@ class renderer extends \plugin_renderer_base {
                 $a = (object)['item' => $movetargetsforname, 'target' => $item->get_fullname()];
                 $movehere = get_string('moveinto', 'tool_muprog', $a);
                 $target = $childpadding . \html_writer::link($turl, $movehere, ['class' => 'movehere']);
-                $rows[]  = [$target, '', ''];
+                $rows[]  = [$target, '', '', '', ''];
             }
 
             if ($canedit && $targetpost) {
@@ -452,7 +459,7 @@ class renderer extends \plugin_renderer_base {
                 $a = (object)['item' => $movetargetsforname, 'target' => $item->get_fullname()];
                 $movehere = get_string('moveafter', 'tool_muprog', $a);
                 $target = $padding . \html_writer::link($turl, $movehere, ['class' => 'movehere']);
-                $rows[]  = [$target, '', ''];
+                $rows[]  = [$target, '', '', '', ''];
             }
         };
         $renderercolumns($top, 0, 0, null, isset($movetargetsfor));
@@ -462,6 +469,7 @@ class renderer extends \plugin_renderer_base {
             get_string('item', 'tool_muprog'),
             get_string('itempoints', 'tool_muprog'),
             get_string('sequencetype', 'tool_muprog'),
+            get_string('duration_days', 'tool_muprog'),
             get_string('actions'),
         ];
         $table->id = 'program_content';
@@ -720,6 +728,13 @@ class renderer extends \plugin_renderer_base {
      * @param stdClass $allocation
      * @return string
      */
+        /**
+     * Render progress.
+     *
+     * @param stdClass $program
+     * @param stdClass $allocation
+     * @return string
+     */
     public function render_user_progress(stdClass $program, stdClass $allocation): string {
         global $DB;
 
@@ -728,6 +743,7 @@ class renderer extends \plugin_renderer_base {
         $canteakeattendance = has_capability('tool/muprog:takeattendance', $context);
         $canadmin = has_capability('tool/muprog:admin', $context);
         $dateformat = get_string('strftimedatetimeshort');
+        $dateformat_short = get_string('strftimedate'); // Формат только для даты
 
         $top = program::load_content($program->id);
 
@@ -745,10 +761,11 @@ class renderer extends \plugin_renderer_base {
             &$DB,
             &$context,
             $dateformat,
+            $dateformat_short,
             $canevidence,
             $canteakeattendance,
             $canadmin
-): void {
+        ): void {
 
             $fullname = $item->get_fullname();
             $id = $item->get_id();
@@ -774,6 +791,7 @@ class renderer extends \plugin_renderer_base {
             } else {
                 $completiontype = '';
             }
+            
             if ($completiondelay = $item->get_completiondelay()) {
                 if ($completiontype !== '') {
                     $completiontype .= '<br />';
@@ -781,9 +799,14 @@ class renderer extends \plugin_renderer_base {
                 $completiontype .= '<small>' . get_string('completiondelay', 'tool_muprog') . ': ' . util::format_duration($completiondelay) . '</small>';
             }
 
+            // === НОВОЕ: Получение дат старта и дедлайна курса из user_enrolments ===
+            $course_start_str = '-';
+            $course_deadline_str = '-';
+
             if ($item instanceof course) {
                 $courseid = $item->get_courseid();
                 $coursecontext = \context_course::instance($courseid, IGNORE_MISSING);
+                
                 if ($coursecontext) {
                     $canaccesscourse = false;
                     if (has_capability('moodle/course:view', $coursecontext)) {
@@ -801,7 +824,41 @@ class renderer extends \plugin_renderer_base {
                 } else {
                     $fullname .= ' <span class="badge bg-danger">' . get_string('errorcoursemissing', 'tool_muprog') . '</span>';
                 }
+
+                // Запрашиваем реальные даты зачисления пользователя в этот курс
+                                // === ИЗМЕНЕНО: Дедлайн берём из tool_muprog_user_deadlines (источник истины),
+                // дату старта — из user_enrolments (с защитой от нулевых значений) ===
+                
+                // 1. Дедлайн — из нашей таблицы (она всегда актуальна, включая ручные переопределения)
+                $deadline_record = $DB->get_record('tool_muprog_user_deadlines', [
+                    'userid' => $allocation->userid,
+                    'programid' => $program->id,
+                    'courseid' => $courseid,
+                ]);
+                if ($deadline_record && !empty($deadline_record->deadline)) {
+                    $course_deadline_str = userdate($deadline_record->deadline, get_string('strftimedate'));
+                }
+
+                // 2. Дата старта — из user_enrolments, берём запись с ненулевым timestart
+                $sql = "SELECT ue.timestart
+                          FROM {user_enrolments} ue
+                          JOIN {enrol} e ON e.id = ue.enrolid
+                         WHERE ue.userid = :userid
+                           AND e.courseid = :courseid
+                           AND ue.status = :active
+                           AND ue.timestart > 0
+                      ORDER BY ue.timestart DESC";
+                $enrol = $DB->get_record_sql($sql, [
+                    'userid' => $allocation->userid,
+                    'courseid' => $courseid,
+                    'active' => ENROL_USER_ACTIVE
+                ], IGNORE_MULTIPLE);
+
+                if ($enrol && !empty($enrol->timestart)) {
+                    $course_start_str = userdate($enrol->timestart, get_string('strftimedate'));
+                }
             }
+            // ========================================================================
 
             if ($item instanceof top) {
                 $itemname = $output->pix_icon('itemtop', get_string('program', 'tool_muprog'), 'tool_muprog') . '&nbsp;' . $fullname;
@@ -849,7 +906,50 @@ class renderer extends \plugin_renderer_base {
                 $evidenceinfo .= ' ' . $output->render($editaction);
             }
 
-            $rows[] = [$itemname, $points, $completiontype, $completioninfo, $evidenceinfo];
+                        // === Иконки редактирования для дат старта и дедлайна курса ===
+            $start_cell = $course_start_str;
+            $deadline_cell = $course_deadline_str;
+
+            if ($item instanceof course && $canadmin) {
+                if (!$program->archived && !$allocation->archived && has_capability('tool/muprog:manageallocation', $context)) {
+
+                    // Иконка редактирования даты старта
+                    $start_overrideurl = new url('/admin/tool/muprog/management/course_startdate_override.php', [
+                        'allocationid' => $allocation->id,
+                        'courseid' => $item->get_courseid(),
+                        'itemid' => $item->get_id(),
+                    ]);
+                    $start_overrideaction = new \tool_mulib\output\ajax_form\icon(
+                        $start_overrideurl,
+                        get_string('override_startdate', 'tool_muprog'),
+                        'i/edit'
+                    );
+                    $start_cell .= ' ' . $output->render($start_overrideaction);
+
+                    // Иконка редактирования дедлайна
+                    $deadline_overrideurl = new url('/admin/tool/muprog/management/course_deadline_override.php', [
+                        'allocationid' => $allocation->id,
+                        'courseid' => $item->get_courseid(),
+                        'itemid' => $item->get_id(),
+                    ]);
+                    $deadline_overrideaction = new \tool_mulib\output\ajax_form\icon(
+                        $deadline_overrideurl,
+                        get_string('override_deadline', 'tool_muprog'),
+                        'i/edit'
+                    );
+                    $deadline_cell .= ' ' . $output->render($deadline_overrideaction);
+                }
+            }
+
+            $rows[] = [
+                $itemname,
+                $points,
+                $completiontype,
+                $start_cell,
+                $deadline_cell,
+                $completioninfo,
+                $evidenceinfo
+            ];
 
             foreach ($item->get_children() as $child) {
                 $renderercolumns($child, $itemdepth + 1);
@@ -858,14 +958,17 @@ class renderer extends \plugin_renderer_base {
         $renderercolumns($top, 0);
 
         $table = new \html_table();
+        // === ИЗМЕНЕНИЕ: Обновлены заголовки таблицы ===
         $table->head = [
             get_string('item', 'tool_muprog'),
             get_string('itempoints', 'tool_muprog'),
             get_string('sequencetype', 'tool_muprog'),
+            get_string('course_start_date', 'tool_muprog'),      // Новый заголовок
+            get_string('course_deadline_date', 'tool_muprog'),   // Новый заголовок
             get_string('completiondate', 'tool_muprog'),
             get_string('evidence', 'tool_muprog'),
         ];
-        $table->id = 'program_content';
+        $table->id = 'program_user_progress';
         $table->attributes['class'] = 'table table-striped table-hover table-bordered mb-3';
         $table->data = $rows;
 

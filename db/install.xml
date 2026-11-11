@@ -283,5 +283,48 @@
         <INDEX NAME="sourceid-cohortid" UNIQUE="true" FIELDS="sourceid, cohortid"/>
       </INDEXES>
     </TABLE>
+
+    <!-- ========================================================== -->
+    <!-- НАШИ НОВЫЕ ТАБЛИЦЫ (ВСТАВЛЯТЬ ПЕРЕД закрывающим тегом </TABLES>) -->
+    <!-- ========================================================== -->
+    
+    <TABLE NAME="tool_muprog_course_rules" COMMENT="Rules for course durations and offsets within a program">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="programid" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="duration_days" TYPE="int" LENGTH="5" NOTNULL="true" DEFAULT="14"/>
+        <FIELD NAME="offset_type" TYPE="char" LENGTH="30" NOTNULL="true" DEFAULT="program_start"/>
+        <FIELD NAME="sortorder" TYPE="int" LENGTH="5" NOTNULL="true" DEFAULT="0"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="program_course" UNIQUE="true" FIELDS="programid, courseid"/>
+      </INDEXES>
+    </TABLE>
+
+    <TABLE NAME="tool_muprog_user_deadlines" COMMENT="Individual user deadlines for courses in programs">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="programid" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="courseid" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="deadline" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="completed" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true"/>
+        <FIELD NAME="overridden_start" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+<FIELD NAME="overridden_deadline" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+      </KEYS>
+      <INDEXES>
+        <INDEX NAME="user_program_course" UNIQUE="true" FIELDS="userid, programid, courseid"/>
+        <INDEX NAME="user_deadline" UNIQUE="false" FIELDS="userid, deadline"/>
+      </INDEXES>
+    </TABLE>
   </TABLES>
 </XMLDB>
