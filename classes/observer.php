@@ -29,7 +29,6 @@ class observer {
 
     /**
      * 1. Срабатывает при распределении пользователя в программу.
-     * Рассчитывает жесткое расписание для курсов.
      */
     public static function handle_allocation_created(\tool_muprog\event\allocation_created $event) {
         global $DB;
@@ -49,27 +48,22 @@ class observer {
             return;
         }
 
-        // Базовая дата начала программы
         $program_start = $allocation->timestart ?: time();
-
-        // Загружаем иерархическую структуру программы (гарантирует правильный порядок sortorder)
         $top = \tool_muprog\local\program::load_content($programid);
 
-        // Запускаем рекурсивную обработку расписания для индивидуальных курсов
         self::process_item_schedule($userid, $programid, $top, $program_start);
         
-        debugging("Индивидуальное расписание для пользователя $userid успешно создано.", DEBUG_DEVELOPER);
+        debugging("Индивидуальное расписание для пользователя $userid успешно создано и применено.", DEBUG_DEVELOPER);
     }
 
     /**
      * Рекурсивно обрабатывает элементы программы, соблюдая иерархию и порядок.
      */
-    private static function process_item_schedule(int $userid, int $programid, $item, int $start_time): int {
+    public static function process_item_schedule(int $userid, int $programid, $item, int $start_time): int {
         global $DB;
 
         $is_byschedule = false;
 
-        // Проверяем, является ли текущий элемент (top или set) расписанием
         if ($item instanceof \tool_muprog\local\content\top) {
             $record = $DB->get_record('tool_muprog_item', ['id' => $item->get_id()]);
             if ($record) {
@@ -85,19 +79,16 @@ class observer {
         }
 
         $current_time = $start_time;
-        $children = $item->get_children(); // Дети уже отсортированы по sortorder
+        $children = $item->get_children();
 
         foreach ($children as $child) {
             if ($child->is_course()) {
                 if ($is_byschedule) {
-                    // Последовательное расписание: передаем current_time и получаем время старта следующего
                     $current_time = self::process_course_schedule($userid, $programid, $child, $current_time);
                 } else {
-                    // Параллельное расписание: все курсы стартуют одновременно от start_time
                     self::process_course_schedule($userid, $programid, $child, $start_time);
                 }
             } else {
-                // Рекурсивная обработка вложенных наборов
                 $current_time = self::process_item_schedule($userid, $programid, $child, $current_time);
             }
         }
@@ -106,10 +97,10 @@ class observer {
     }
 
     /**
-     * Обрабатывает один курс: рассчитывает даты и обновляет зачисления, уважая ручные переопределения.
-     * Возвращает время старта следующего курса (дедлайн + 1 день).
+     * Обрабатывает один курс: рассчитывает даты и обновляет зачисления.
+     * Полностью уважает ручные переопределения и не перезаписывает их.
      */
-    private static function process_course_schedule(int $userid, int $programid, $course_item, int $start_time): int {
+    public static function process_course_schedule(int $userid, int $programid, $course_item, int $start_time): int {
         global $DB;
 
         $courseid = $course_item->get_courseid();
@@ -123,49 +114,66 @@ class observer {
         $course_start = $start_time;
         $course_deadline = $course_start + ($duration_days * DAYSECS);
 
-        // Проверяем, есть ли ручные переопределения для этого пользователя и курса.
-        $existing = $DB->get_record('tool_muprog_user_deadlines', [
+        // === Защита от дубликатов ===
+        $existing_records = $DB->get_records('tool_muprog_user_deadlines', [
             'userid' => $userid,
             'programid' => $programid,
             'courseid' => $courseid
-        ]);
+        ], 'id DESC', '*', 0, 1);
+        $existing = !empty($existing_records) ? reset($existing_records) : null;
 
         $update_start = true;
         $update_deadline = true;
+        $skip_save = false; // Флаг: полностью пропустить сохранение в tool_muprog_user_deadlines
 
         if ($existing && !empty($existing->overridden_start)) {
-            // Дата старта была изменена вручную. Мы НЕ будем обновлять её в БД.
+            // Дата старта переопределена вручную — читаем её из user_enrolments
             $update_start = false;
-            
-            // Для корректного логирования читаем реальное значение из user_enrolments
             $enrol_instance = $DB->get_record('enrol', ['courseid' => $courseid, 'status' => 0], '*', IGNORE_MULTIPLE);
             if ($enrol_instance) {
                 $ue = $DB->get_record('user_enrolments', ['enrolid' => $enrol_instance->id, 'userid' => $userid]);
                 if ($ue && !empty($ue->timestart)) {
                     $course_start = (int)$ue->timestart;
+                    // Пересчитываем дедлайн от ручного старта (если он тоже не переопределён)
+                    if (!$existing || empty($existing->overridden_deadline)) {
+                        $course_deadline = $course_start + ($duration_days * DAYSECS);
+                    }
                 }
             }
             debugging("Курс $courseid: дата старта переопределена вручную ({$course_start}), не изменяем timestart.", DEBUG_DEVELOPER);
         }
 
         if ($existing && !empty($existing->overridden_deadline)) {
-            // Дедлайн был изменён вручную — сохраняем его и не обновляем в БД.
+            // Дедлайн переопределён вручную — сохраняем его
             $course_deadline = (int)$existing->deadline;
             $update_deadline = false;
             debugging("Курс $courseid: дедлайн переопределён вручную ({$course_deadline}), не изменяем timeend.", DEBUG_DEVELOPER);
         }
 
+        // === КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ===
+        // Если ОБА флага установлены (и старт, и дедлайн переопределены вручную),
+        // мы вообще не должны перезаписывать запись в tool_muprog_user_deadlines.
+        // Иначе мы потеряем ручные значения.
+        if ($existing && !empty($existing->overridden_start) && !empty($existing->overridden_deadline)) {
+            $skip_save = true;
+            debugging("Курс $courseid: оба значения переопределены вручную, пропускаем сохранение.", DEBUG_DEVELOPER);
+        }
+
         debugging("Курс $courseid: Старт=" . date('Y-m-d H:i', $course_start) .
                   ", Дедлайн=" . date('Y-m-d H:i', $course_deadline), DEBUG_DEVELOPER);
 
-        self::save_deadline($userid, $programid, $courseid, $course_deadline);
+        // Сохраняем в tool_muprog_user_deadlines только если не оба значения переопределены
+        if (!$skip_save) {
+            self::save_deadline($userid, $programid, $courseid, $course_deadline);
+        }
 
-        // Обновляем user_enrolments, учитывая флаги переопределения.
+        // Обновляем user_enrolments, учитывая флаги переопределения
         self::update_enrolment_dates_respect_overrides(
             $userid, $courseid, $course_start, $course_deadline, $update_start, $update_deadline
         );
 
         // Следующий курс стартует на следующий день после дедлайна текущего
+        // (будь то ручной или расчётный)
         return $course_deadline + DAYSECS;
     }
 
@@ -216,15 +224,12 @@ class observer {
 
     /**
      * 2. Срабатывает при завершении курса.
-     * Отмечает курс как завершенный в нашей таблице.
      */
     public static function handle_course_completed(\core\event\course_completed $event) {
         global $DB;
 
         $userid = $event->userid;
         $courseid = $event->courseid;
-
-        debugging("=== COURSE_COMPLETED: user=$userid, course=$courseid ===", DEBUG_DEVELOPER);
 
         $course_rule = $DB->get_record('tool_muprog_course_rules', ['courseid' => $courseid]);
         if (!$course_rule) {
@@ -239,12 +244,7 @@ class observer {
     }
 
     /**
-     * 3. Резервный обработчик при зачислении в курс.
-     * Применяет только дедлайн (timeend), дата старта не пересчитывается.
-     */
-        /**
-     * 3. Резервный обработчик при зачислении в курс (страховка для асинхронных зачислений).
-     * Применяет и timeend, и timestart, если они не были переопределены вручную.
+     * 3. Резервный обработчик при зачислении в курс (страховка для синхронизации с когортой).
      */
     public static function handle_user_enrolment_created(\core\event\user_enrolment_created $event) {
         global $DB;
@@ -252,77 +252,113 @@ class observer {
         $userid = $event->relateduserid;
         $courseid = $event->courseid;
 
-        $course_rule = $DB->get_record('tool_muprog_course_rules', ['courseid' => $courseid]);
-        if (!$course_rule) {
+        debugging("[ENROL_CREATED] Start: user=$userid, course=$courseid", DEBUG_DEVELOPER);
+
+        $course_rules = $DB->get_records('tool_muprog_course_rules', ['courseid' => $courseid]);
+        if (empty($course_rules)) {
+            debugging("[ENROL_CREATED] Abort: course not in any program", DEBUG_DEVELOPER);
             return;
         }
 
-        $deadline_record = $DB->get_record('tool_muprog_user_deadlines', [
-            'userid' => $userid,
-            'programid' => $course_rule->programid,
-            'courseid' => $courseid
-        ]);
-
-        // Если для этого пользователя и курса еще нет расписания, ничего не делаем
-        if (!$deadline_record) {
-            return;
-        }
-
-        // Рассчитываем правильный старт на основе дедлайна и длительности курса
-        $duration_days = (int)$course_rule->duration_days ?: 14;
-        $calculated_start = $deadline_record->deadline - ($duration_days * DAYSECS);
-
-        $enrol_instances = $DB->get_records('enrol', ['courseid' => $courseid, 'status' => 0]);
-        
-        foreach ($enrol_instances as $enrol_instance) {
-            $ue = $DB->get_record('user_enrolments', [
-                'enrolid' => $enrol_instance->id,
-                'userid' => $userid
-            ]);
+        foreach ($course_rules as $course_rule) {
+            debugging("[ENROL_CREATED] Checking program: {$course_rule->programid}", DEBUG_DEVELOPER);
             
-            if (!$ue) {
+            $allocation = $DB->get_record('tool_muprog_allocation', [
+                'userid' => $userid,
+                'programid' => $course_rule->programid,
+                'archived' => 0
+            ]);
+
+            if (!$allocation) {
+                debugging("[ENROL_CREATED] Abort: no active allocation for this user/program", DEBUG_DEVELOPER);
                 continue;
             }
 
-            $changed = false;
+            $deadline_records = $DB->get_records('tool_muprog_user_deadlines', [
+                'userid' => $userid,
+                'programid' => $course_rule->programid,
+                'courseid' => $courseid
+            ], 'id DESC', '*', 0, 1);
+            
+            $deadline_record = !empty($deadline_records) ? reset($deadline_records) : null;
 
-            // 1. Обновляем timeend, если он НЕ переопределен вручную и отличается от расчетного
-            if (empty($deadline_record->overridden_deadline) && $ue->timeend != $deadline_record->deadline) {
-                $ue->timeend = $deadline_record->deadline;
-                $changed = true;
-            }
-
-            // 2. Обновляем timestart, если он НЕ переопределен вручную
-            // Применяем, если он еще не задан (0) или отличается от расчетного
-            if (empty($deadline_record->overridden_start)) {
-                if ($ue->timestart == 0 || $ue->timestart != $calculated_start) {
-                    $ue->timestart = $calculated_start;
-                    $changed = true;
-                }
-            }
-
-            if ($changed) {
-                $ue->timemodified = time();
-                $DB->update_record('user_enrolments', $ue);
+            if (!$deadline_record) {
+                debugging("[ENROL_CREATED] No deadline record. Triggering schedule generation...", DEBUG_DEVELOPER);
+                $top = \tool_muprog\local\program::load_content($course_rule->programid);
+                $program_start = $allocation->timestart ?: time();
+                self::process_item_schedule($userid, $course_rule->programid, $top, $program_start);
                 
-                debugging("Обновлены даты зачисления (страховка) для курса $courseid, пользователь $userid. " .
-                          "Start: " . ($ue->timestart ? date('Y-m-d', $ue->timestart) : '0') . 
-                          ", End: " . ($ue->timeend ? date('Y-m-d', $ue->timeend) : '0'), DEBUG_DEVELOPER);
+                $deadline_records = $DB->get_records('tool_muprog_user_deadlines', [
+                    'userid' => $userid,
+                    'programid' => $course_rule->programid,
+                    'courseid' => $courseid
+                ], 'id DESC', '*', 0, 1);
+                $deadline_record = !empty($deadline_records) ? reset($deadline_records) : null;
+            }
+
+            if (!$deadline_record || empty($deadline_record->deadline)) {
+                debugging("[ENROL_CREATED] Abort: still no deadline record after generation", DEBUG_DEVELOPER);
+                continue;
+            }
+
+            debugging("[ENROL_CREATED] Deadline found: {$deadline_record->deadline}. Applying to enrolments...", DEBUG_DEVELOPER);
+
+            $duration_days = (int)$course_rule->duration_days ?: 14;
+            $calculated_start = $deadline_record->deadline - ($duration_days * DAYSECS);
+
+            $enrol_instances = $DB->get_records('enrol', ['courseid' => $courseid, 'status' => 0]);
+            
+            foreach ($enrol_instances as $enrol_instance) { // <-- ИСПРАВЛЕНО: здесь теперь правильная фигурная скобка {
+                $ue = $DB->get_record('user_enrolments', [
+                    'enrolid' => $enrol_instance->id,
+                    'userid' => $userid
+                ]);
+                
+                if (!$ue) {
+                    debugging("[ENROL_CREATED] Skip: user not enrolled via this instance", DEBUG_DEVELOPER);
+                    continue;
+                }
+
+                $changed = false;
+
+                if (empty($deadline_record->overridden_deadline) && $ue->timeend != $deadline_record->deadline) {
+                    $ue->timeend = $deadline_record->deadline;
+                    $changed = true;
+                    debugging("[ENROL_CREATED] Updating timeend to: {$ue->timeend}", DEBUG_DEVELOPER);
+                }
+
+                if (empty($deadline_record->overridden_start)) {
+                    if ($ue->timestart == 0 || $ue->timestart != $calculated_start) {
+                        $ue->timestart = $calculated_start;
+                        $changed = true;
+                        debugging("[ENROL_CREATED] Updating timestart to: {$ue->timestart}", DEBUG_DEVELOPER);
+                    }
+                }
+
+                if ($changed) {
+                    $ue->timemodified = time();
+                    $DB->update_record('user_enrolments', $ue);
+                    debugging("[ENROL_CREATED] SUCCESS: Enrolment updated!", DEBUG_DEVELOPER);
+                } else {
+                    debugging("[ENROL_CREATED] Skip: dates already match or overridden", DEBUG_DEVELOPER);
+                }
             }
         }
     }
 
     /**
-     * Вспомогательный метод: сохраняет или обновляет дедлайн в таблице tool_muprog_user_deadlines.
+     * Вспомогательный метод: сохраняет или обновляет дедлайн.
      */
     private static function save_deadline(int $userid, int $programid, int $courseid, int $deadline): void {
         global $DB;
 
-        $existing = $DB->get_record('tool_muprog_user_deadlines', [
+        $existing_records = $DB->get_records('tool_muprog_user_deadlines', [
             'userid' => $userid,
             'programid' => $programid,
             'courseid' => $courseid
-        ]);
+        ], 'id DESC', '*', 0, 1);
+        
+        $existing = !empty($existing_records) ? reset($existing_records) : null;
 
         $record = new \stdClass();
         $record->userid = $userid;
@@ -344,7 +380,6 @@ class observer {
 
     /**
      * Принудительно обновляет timestart и timeend во ВСЕХ записях user_enrolments.
-     * (Резервный метод, используется при необходимости полного сброса расписания).
      */
     private static function update_enrolment_dates_force(int $userid, int $courseid, int $timestart, int $timeend): void {
         global $DB;
@@ -355,11 +390,9 @@ class observer {
         ]);
 
         if (empty($enrol_instances)) {
-            debugging("Методы зачисления не найдены для курса $courseid", DEBUG_DEVELOPER);
             return;
         }
 
-        $updated_count = 0;
         foreach ($enrol_instances as $enrol_instance) {
             $user_enrolment = $DB->get_record('user_enrolments', [
                 'enrolid' => $enrol_instance->id,
@@ -374,9 +407,6 @@ class observer {
             $user_enrolment->timeend = $timeend;
             $user_enrolment->timemodified = time();
             $DB->update_record('user_enrolments', $user_enrolment);
-            $updated_count++;
         }
-
-        debugging("Обновлено $updated_count записей user_enrolments для курса $courseid, пользователя $userid", DEBUG_DEVELOPER);
     }
 }

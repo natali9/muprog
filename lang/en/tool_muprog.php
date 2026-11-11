@@ -527,3 +527,4 @@ $string['current_startdate'] = 'Current start date';
 $string['new_startdate'] = 'New start date';
 $string['new_startdate_help'] = 'Select a new date to open access to the course. The course deadline is not changed. Untick "Enable" to remove the start date (course becomes available immediately).';
 $string['override_startdate'] = 'Override start date';
+$string['task_fix_cohort_schedules'] = 'Automatic course schedule recalculation (cohort sync fix)';

@@ -320,7 +320,9 @@
       </FIELDS>
       <KEYS>
         <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="unique_user_program_course" TYPE="unique" FIELDS="userid, programid, courseid" COMMENT="Уникальный индекс для предотвращения дубликатов"/>
       </KEYS>
+      <KEYS>
       <INDEXES>
         <INDEX NAME="user_program_course" UNIQUE="true" FIELDS="userid, programid, courseid"/>
         <INDEX NAME="user_deadline" UNIQUE="false" FIELDS="userid, deadline"/>
